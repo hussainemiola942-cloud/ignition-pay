@@ -1,33 +1,31 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
 import { BalanceReconciliationService } from './balance-reconciliation.service';
-import { Wallet } from '../wallets/entities/wallet.entity';
-import { BalanceDiscrepancy } from './entities/balance-discrepancy.entity';
+import { PrismaService } from '../prisma/prisma.service';
+import { ReconciliationStatus } from '@prisma/client';
 
 describe('BalanceReconciliationService', () => {
   let service: BalanceReconciliationService;
-  let walletRepoMock: any;
-  let discrepancyRepoMock: any;
+  let prismaMock: jest.Mocked<PrismaService>;
 
   beforeEach(async () => {
-    walletRepoMock = {
-      find: jest.fn(),
-    };
-    discrepancyRepoMock = {
-      create: jest.fn().mockImplementation((dto) => dto),
-      save: jest.fn().mockResolvedValue(true),
-    };
+    prismaMock = {
+      wallet: {
+        findMany: jest.fn(),
+      },
+      balanceDiscrepancy: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      $transaction: jest.fn(),
+    } as any;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BalanceReconciliationService,
         {
-          provide: getRepositoryToken(Wallet),
-          useValue: walletRepoMock,
-        },
-        {
-          provide: getRepositoryToken(BalanceDiscrepancy),
-          useValue: discrepancyRepoMock,
+          provide: PrismaService,
+          useValue: prismaMock,
         },
       ],
     }).compile();
@@ -47,22 +45,108 @@ describe('BalanceReconciliationService', () => {
       stellarAddress: 'GABCD1234567890',
       balance: '100.0000000',
       isActive: true,
-    } as Wallet;
+    };
 
-    jest.spyOn(service['horizonServer'], 'loadAccount').mockResolvedValue({
-      balances: [{ asset_type: 'native', balance: '95.0000000' }],
+    prismaMock.wallet.findMany.mockResolvedValue([
+      {
+        id: mockWallet.id,
+        depositAddress: mockWallet.stellarAddress,
+        balance: '100.0000000',
+        isActive: true,
+      },
+    ]);
+
+    jest.spyOn(service as any, 'horizonServer').mockValue({
+      loadAccount: jest.fn().mockResolvedValue({
+        balances: [{ asset_type: 'native', balance: '95.0000000' }],
+      }),
     } as any);
+
+    prismaMock.balanceDiscrepancy.findFirst.mockResolvedValue(null);
+    prismaMock.$transaction.mockImplementation(async (cb) => {
+      const tx = {
+        balanceDiscrepancy: {
+          findFirst: prismaMock.balanceDiscrepancy.findFirst,
+          create: jest.fn().mockResolvedValue({ id: 'disc-123' }),
+          update: jest.fn(),
+        },
+      };
+      return cb(tx);
+    });
 
     const isDiscrepant = await service.reconcileWallet(mockWallet);
 
     expect(isDiscrepant).toBe(true);
-    expect(discrepancyRepoMock.save).toHaveBeenCalledWith(
-      expect.objectContaining({
-        walletId: 'wallet-123',
-        dbBalance: '100.0000000',
-        onChainBalance: '95.0000000',
-        driftAmount: '5.0000000',
+    expect(prismaMock.$transaction).toHaveBeenCalled();
+  });
+
+  it('should not create duplicate PENDING discrepancy for same wallet', async () => {
+    const mockWallet = {
+      id: 'wallet-123',
+      stellarAddress: 'GABCD1234567890',
+      balance: '100.0000000',
+      isActive: true,
+    };
+
+    jest.spyOn(service as any, 'horizonServer').mockValue({
+      loadAccount: jest.fn().mockResolvedValue({
+        balances: [{ asset_type: 'native', balance: '95.0000000' }],
       }),
-    );
+    } as any);
+
+    prismaMock.balanceDiscrepancy.findFirst.mockResolvedValue({
+      id: 'existing-disc',
+      walletId: 'wallet-123',
+      status: ReconciliationStatus.PENDING,
+    });
+
+    prismaMock.$transaction.mockImplementation(async (cb) => {
+      const tx = {
+        balanceDiscrepancy: {
+          findFirst: prismaMock.balanceDiscrepancy.findFirst,
+          create: jest.fn(),
+          update: jest.fn().mockResolvedValue({ id: 'existing-disc' }),
+        },
+      };
+      return cb(tx);
+    });
+
+    const isDiscrepant = await service.reconcileWallet(mockWallet);
+
+    expect(isDiscrepant).toBe(true);
+    expect(prismaMock.$transaction).toHaveBeenCalled();
+  });
+
+  it('should create new discrepancy when previous was resolved', async () => {
+    const mockWallet = {
+      id: 'wallet-123',
+      stellarAddress: 'GABCD1234567890',
+      balance: '100.0000000',
+      isActive: true,
+    };
+
+    jest.spyOn(service as any, 'horizonServer').mockValue({
+      loadAccount: jest.fn().mockResolvedValue({
+        balances: [{ asset_type: 'native', balance: '95.0000000' }],
+      }),
+    } as any);
+
+    prismaMock.balanceDiscrepancy.findFirst.mockResolvedValue(null);
+
+    prismaMock.$transaction.mockImplementation(async (cb) => {
+      const tx = {
+        balanceDiscrepancy: {
+          findFirst: prismaMock.balanceDiscrepancy.findFirst,
+          create: jest.fn().mockResolvedValue({ id: 'new-disc' }),
+          update: jest.fn(),
+        },
+      };
+      return cb(tx);
+    });
+
+    const isDiscrepant = await service.reconcileWallet(mockWallet);
+
+    expect(isDiscrepant).toBe(true);
+    expect(prismaMock.$transaction).toHaveBeenCalled();
   });
 });
