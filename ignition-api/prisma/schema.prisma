@@ -557,6 +557,30 @@ model Address {
   @@map("addresses")
 }
 
+enum ReconciliationStatus {
+  PENDING
+  RESOLVED
+  IGNORED
+}
+
+/// BalanceDiscrepancy model for tracking wallet balance drift between DB and on-chain
+model BalanceDiscrepancy {
+  id             String              @id @default(uuid())
+  walletId       String
+  stellarAddress String
+  dbBalance      Decimal             @db.Decimal(18, 7)
+  onChainBalance Decimal             @db.Decimal(18, 7)
+  driftAmount    Decimal             @db.Decimal(18, 7)
+  status         ReconciliationStatus @default(PENDING)
+  notes          String?
+  createdAt      DateTime            @default(now())
+
+  @@index([walletId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("balance_discrepancies")
+}
+
 /// DepositAddress model for tracking generated deposit addresses associated with wallets
 model DepositAddress {
   id          String        @id @default(uuid())

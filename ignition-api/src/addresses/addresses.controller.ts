@@ -63,6 +63,8 @@ export class AddressesController {
     return this.addressesService.findAll();
   }
 
+  
+
   @Get(':id')
   @UseGuards(ApiKeyGuard, ApiKeyScopeGuard)
   @RequireScope('read')
